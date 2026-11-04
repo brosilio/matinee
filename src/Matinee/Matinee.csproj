@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>matinee</AssemblyName>
+    <RootNamespace>Matinee</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <StripSymbols>true</StripSymbols>
+    <!-- Target box: one core, 1 GB. Workstation GC, no background GC thread. -->
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <EventSourceSupport>false</EventSourceSupport>
+    <DebuggerSupport>false</DebuggerSupport>
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+    <StackTraceSupport>true</StackTraceSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Matinee.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Core/Httpgrl.Core.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.StaticFiles/Httpgrl.Modules.StaticFiles.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Rewrite/Httpgrl.Modules.Rewrite.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Headers/Httpgrl.Modules.Headers.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Limits/Httpgrl.Modules.Limits.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Access/Httpgrl.Modules.Access.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Compression/Httpgrl.Modules.Compression.csproj" />
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Status/Httpgrl.Modules.Status.csproj" />
+  </ItemGroup>
+</Project>

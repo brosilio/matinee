@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>matinee</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <main id="app">
+    <section id="stage">
+      <canvas id="screen" width="1280" height="720"></canvas>
+      <div id="overlay" hidden></div>
+      <pre id="stats" hidden></pre>
+      <div id="controls">
+        <span id="viewers"></span>
+        <input id="volume" type="range" min="0" max="1" step="0.01" aria-label="volume">
+        <button id="btn-stats" type="button" title="stats">stats</button>
+        <button id="btn-full" type="button" title="fullscreen">full</button>
+      </div>
+    </section>
+
+    <section id="chat">
+      <div class="chat-box">
+        <div class="chat-log" aria-live="polite"></div>
+        <div class="chat-live" hidden></div>
+        <div class="chat-prompt"><span class="gt">&gt;</span><input class="chat-input" maxlength="500"
+          autocomplete="off" spellcheck="true" aria-label="say something"></div>
+        <div class="chat-status">&nbsp;</div>
+        <div class="chat-hint" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="gate">
+    <form>
+      <h1>matinee</h1>
+      <label>nick <input id="nick" maxlength="24" autocomplete="nickname" required pattern="@?[A-Za-z0-9_\-]{1,24}"></label>
+      <label>password <input id="pass" type="password" autocomplete="current-password"></label>
+      <button type="submit">take a seat</button>
+      <p class="err"></p>
+    </form>
+  </div>
+</body>
+</html>

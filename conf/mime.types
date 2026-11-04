@@ -1,0 +1,57 @@
+types {
+    text/html                             html htm shtml;
+    text/css                              css;
+    text/xml                              xml;
+    text/plain                            txt log md;
+    text/csv                              csv;
+    text/javascript                       js mjs;
+    text/markdown                         markdown;
+    text/calendar                         ics;
+    text/vtt                              vtt;
+
+    image/gif                             gif;
+    image/jpeg                            jpeg jpg;
+    image/png                             png;
+    image/webp                            webp;
+    image/avif                            avif;
+    image/svg+xml                         svg svgz;
+    image/x-icon                          ico;
+    image/bmp                             bmp;
+    image/tiff                            tif tiff;
+
+    font/woff                             woff;
+    font/woff2                            woff2;
+    font/ttf                              ttf;
+    font/otf                              otf;
+
+    application/json                      json;
+    application/ld+json                   jsonld;
+    application/manifest+json             webmanifest;
+    application/wasm                      wasm;
+    application/pdf                       pdf;
+    application/xhtml+xml                 xhtml;
+    application/rss+xml                   rss;
+    application/atom+xml                  atom;
+    application/zip                       zip;
+    application/gzip                      gz tgz;
+    application/x-tar                     tar;
+    application/x-7z-compressed           7z;
+    application/x-bzip2                   bz2;
+    application/zstd                      zst;
+    application/vnd.ms-fontobject         eot;
+    application/octet-stream              bin exe dll iso img dmg deb rpm msi;
+
+    audio/mpeg                            mp3;
+    audio/ogg                             ogg oga opus;
+    audio/wav                             wav;
+    audio/flac                            flac;
+    audio/aac                             aac;
+    audio/mp4                             m4a;
+
+    video/mp4                             mp4 m4v;
+    video/webm                            webm;
+    video/ogg                             ogv;
+    video/quicktime                       mov;
+    video/x-matroska                      mkv;
+    video/mp2t                            ts;
+}

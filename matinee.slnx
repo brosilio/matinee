@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Matinee/Matinee.csproj" />
+  <Project Path="tests/Matinee.Tests/Matinee.Tests.csproj" />
+</Solution>
