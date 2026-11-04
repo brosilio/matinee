@@ -20,6 +20,7 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
     private RtmpSession? _publisher;
     private IngestSession? _ingest;
     private FfmpegRelay? _relay;
+    private UplinkClient? _uplink;
     private readonly HashSet<Task> _relayCleanups = [];
     private bool _disposed;
 
@@ -47,6 +48,18 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
                 !old.ProxyArgs.AsSpan().SequenceEqual(s.ProxyArgs);
             Settings = s;
             Room.Apply(s);
+            if (old.UplinkPull != s.UplinkPull || old.UplinkPullKey != s.UplinkPullKey || (_uplink is null && s.UplinkPull is not null))
+            {
+                if (_uplink is not null) await _uplink.DisposeAsync().ConfigureAwait(false);
+                _uplink = null;
+                Room.RemoteEncoders = null;
+                if (s.UplinkPull is not null)
+                {
+                    _uplink = new UplinkClient(Room, s.UplinkPull, s.UplinkPullKey ?? "", _log);
+                    Room.RemoteEncoders = _uplink.Request;
+                    _uplink.Start();
+                }
+            }
             if (_rtmp is null || !Equals(old.IngestListen, s.IngestListen))
             {
                 if (_rtmp is not null) await _rtmp.DisposeAsync().ConfigureAwait(false);
@@ -176,6 +189,8 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
             var rtmp = _rtmp;
             _rtmp = null;
             if (rtmp is not null) await rtmp.DisposeAsync().ConfigureAwait(false);
+            if (_uplink is not null) await _uplink.DisposeAsync().ConfigureAwait(false);
+            _uplink = null;
             Task[] relayCleanups;
             lock (_lock) relayCleanups = [.. _relayCleanups];
             if (relayCleanups.Length > 0) await Task.WhenAll(relayCleanups).ConfigureAwait(false);

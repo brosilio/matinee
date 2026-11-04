@@ -3,7 +3,9 @@ using System.Runtime.CompilerServices;
 using Matinee.Tests;
 
 UnitTests.Register();
+AdaptiveTests.Register();
 EndToEndTests.Register();
+UplinkTests.Register();
 return await T.RunAsync(args.Length > 0 ? args[0] : null);
 
 namespace Matinee.Tests

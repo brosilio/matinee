@@ -46,6 +46,7 @@ IModule[] Modules()
         new Httpgrl.Modules.Access.AccessModule(),
         new Httpgrl.Modules.Status.StatusModule(),
         new Httpgrl.Modules.Compression.CompressionModule(),
+        new Httpgrl.Modules.Proxy.ProxyModule(),
         m,
         .. Httpgrl.Modules.StaticFiles.StaticFiles.Modules(),
     ];

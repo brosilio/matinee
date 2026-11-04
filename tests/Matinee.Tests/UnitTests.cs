@@ -324,6 +324,80 @@ internal static class UnitTests
             T.Eq(key, ring.KeyAtOrBefore(ring.HeadTs));
         });
 
+        // Simulated publisher: 30 fps video with a keyframe every 30 frames, arriving at times the test controls.
+        static (List<MediaFrame> Frames, IngestSession Ing, double[] Now) Publisher()
+        {
+            var frames = new List<MediaFrame>();
+            var now = new double[1];
+            var ing = new IngestSession(frames.Add, new NullLog(), () => now[0]);
+            ing.OnVideo(0, AvcSeqHeader());
+            return (frames, ing, now);
+        }
+
+        static void AssertMonotonic(List<MediaFrame> frames)
+        {
+            double last = double.NegativeInfinity;
+            foreach (var f in frames)
+            {
+                if (!f.IsVideo) continue;
+                T.True(f.Ts > last);
+                last = f.Ts;
+            }
+        }
+
+        T.Add("ingest: encoder warm-up lateness is cut back within seconds, not minutes", () =>
+        {
+            var (frames, ing, now) = Publisher();
+            // The first frames are held back 1350 ms (encoder warm-up), then burst out and run in real time.
+            double lastLead = 0;
+            for (int i = 0; i < 300; i++)
+            {
+                double src = i * 33.3;
+                now[0] = Math.Max(1350 + i * 0.5, src);
+                int before = frames.Count;
+                ing.OnVideo((uint)src, AvcFrame(key: i % 30 == 0));
+                if (frames.Count > before) lastLead = frames[^1].Ts - now[0];
+            }
+            T.True(ing.Skipped > 0);
+            T.True(lastLead >= 0);            // never stamped in the past
+            T.True(lastLead < 50);            // back near the live edge (was 1350 ms ahead)
+            AssertMonotonic(frames);
+            // After the skip, video resumed on a keyframe.
+            var video = frames.Where(f => f.IsVideo).ToList();
+            int gap = video.FindIndex(1, f => f.Ts - video[video.IndexOf(f) - 1].Ts > 200);
+            T.True(gap > 0 && video[gap].IsKey);
+        });
+
+        T.Add("ingest: ordinary jitter costs no frames and is never stamped in the past", () =>
+        {
+            var (frames, ing, now) = Publisher();
+            var rng = new Random(7);
+            for (int i = 0; i < 600; i++)
+            {
+                double src = i * 33.3;
+                now[0] = Math.Max(now[0], 500 + src + rng.NextDouble() * 80);   // 0-80 ms network jitter
+                ing.OnVideo((uint)src, AvcFrame(key: i % 30 == 0));
+                T.True(frames[^1].Ts >= now[0]);
+            }
+            T.Eq(0L, ing.Skipped);
+            AssertMonotonic(frames);
+            T.True(frames[^1].Ts - now[0] < 120);
+        });
+
+        T.Add("ingest: a forward jump in source timestamps re-anchors instead of stalling", () =>
+        {
+            var (frames, ing, now) = Publisher();
+            for (int i = 0; i < 400; i++)
+            {
+                double src = i * 33.3 + (i >= 200 ? 10_000 : 0);   // encoder clock jumps 10 s ahead
+                now[0] = 100 + i * 33.3;
+                ing.OnVideo((uint)src, AvcFrame(key: i % 30 == 0));
+            }
+            T.True(ing.Skipped < 40);          // at most about a GOP while waiting for a keyframe
+            T.True(frames[^1].Ts - now[0] < 50);
+            AssertMonotonic(frames);
+        });
+
         T.Add("ingest: legacy AVC tags become frames on the server clock", () =>
         {
             var frames = new List<MediaFrame>();

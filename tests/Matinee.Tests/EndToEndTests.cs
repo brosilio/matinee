@@ -16,7 +16,7 @@ namespace Matinee.Tests;
 /// <summary>The whole thing in-process: httpgrl + engine, an RTMP publisher, WebSocket viewers.</summary>
 internal static class EndToEndTests
 {
-    private sealed class Rig : IAsyncDisposable
+    internal sealed class Rig : IAsyncDisposable
     {
         public required Engine Engine;
         public required HttpServer Server;
@@ -34,7 +34,15 @@ internal static class EndToEndTests
         }
     }
 
-    private static async Task<Rig> StartAsync(string extra = "")
+    private static Task<Rig> StartAsync(string extra = "") => StartRawAsync($$"""
+            ingest_listen 127.0.0.1:0;
+            ingest_key "sekrit";
+            password "pw";
+            {{extra}}
+            """);
+
+    /// <summary>An instance with this <c>matinee { }</c> body and these extra locations next to <c>/ws</c>.</summary>
+    internal static async Task<Rig> StartRawAsync(string matinee, string locations = "")
     {
         var dir = Directory.CreateTempSubdirectory("matinee-test-").FullName;
         var log = new JsonLogger(Environment.GetEnvironmentVariable("TEST_LOG") == "1" ? Console.OpenStandardOutput() : Stream.Null, LogLevel.Debug);
@@ -47,12 +55,9 @@ internal static class EndToEndTests
         }
         var conf = $$"""
             matinee {
-                ingest_listen 127.0.0.1:0;
-                ingest_key "sekrit";
-                password "pw";
-                {{extra}}
+                {{matinee}}
             }
-            http { server { listen 127.0.0.1:0; location = /ws { matinee_ws; } } }
+            http { server { listen 127.0.0.1:0; location = /ws { matinee_ws; } {{locations}} } }
             """;
         var server = ServerBuilder.LoadText(conf, dir, Modules, log);
         await engine.ApplyAsync(built!.Settings);
@@ -188,14 +193,14 @@ internal static class EndToEndTests
 
     // ---- WebSocket client helpers ----
 
-    private static async Task<ClientWebSocket> Connect(Rig rig)
+    internal static async Task<ClientWebSocket> Connect(Rig rig)
     {
         var ws = new ClientWebSocket();
         await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{rig.HttpPort}/ws"), CancellationToken.None);
         return ws;
     }
 
-    private static async Task<ClientWebSocket> Join(Rig rig, string nick, string tok)
+    internal static async Task<ClientWebSocket> Join(Rig rig, string nick, string tok)
     {
         var ws = await Connect(rig);
         await SendJson(ws, $$"""{"t":"hello","nick":"{{nick}}","pass":"pw","tok":"{{tok}}"}""");
@@ -203,7 +208,7 @@ internal static class EndToEndTests
         return ws;
     }
 
-    private static Task SendJson(ClientWebSocket ws, string json) =>
+    internal static Task SendJson(ClientWebSocket ws, string json) =>
         ws.SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text, true, CancellationToken.None);
 
     private static async Task<(WebSocketMessageType Type, byte[] Data)> Receive(ClientWebSocket ws)
@@ -220,7 +225,7 @@ internal static class EndToEndTests
         }
     }
 
-    private static async Task<JsonElement> NextJson(ClientWebSocket ws, string type, Func<JsonElement, bool>? where = null)
+    internal static async Task<JsonElement> NextJson(ClientWebSocket ws, string type, Func<JsonElement, bool>? where = null)
     {
         while (true)
         {
@@ -231,7 +236,7 @@ internal static class EndToEndTests
         }
     }
 
-    private static async Task<byte[]> NextBinary(ClientWebSocket ws)
+    internal static async Task<byte[]> NextBinary(ClientWebSocket ws)
     {
         while (true)
         {

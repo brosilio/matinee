@@ -40,5 +40,14 @@ public sealed record StreamSettings
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
     ];
 
+    /// <summary>Home side of an uplink: the key a cloud instance must present to <c>matinee_uplink</c>.</summary>
+    public string? UplinkKey { get; init; }
+    /// <summary>Cloud side: pull the stream (and re-encodes) from a home instance here, instead of RTMP ingest.</summary>
+    public Uri? UplinkPull { get; init; }
+    public string? UplinkPullKey { get; init; }
+
+    /// <summary>Automatic low-bitrate re-encodes for viewers on slow links (see <see cref="Adaptive"/>).</summary>
+    public Media.AdaptSettings Adapt { get; init; } = new();
+
     public int EffectiveBufferMs => Mode == StreamMode.Sync ? Math.Max(BufferMs, 60_000) : Math.Max(BufferMs, MaxDelayMs * 2);
 }

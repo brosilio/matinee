@@ -30,6 +30,8 @@ public sealed class MediaFrame
     public FrameKind Kind { get; }
     public bool IsKey { get; }
     public double Ts { get; }
+    /// <summary>Decode time (server clock). Equals <see cref="Ts"/> unless the stream has B-frames.</summary>
+    public double Dts { get; }
     /// <summary>The whole WebSocket frame (header included).</summary>
     public byte[] Wire { get; }
     public int PayloadLength { get; }
@@ -38,15 +40,29 @@ public sealed class MediaFrame
     /// <summary>Position in the ring, assigned on append.</summary>
     public long Seq { get; internal set; } = -1;
 
-    private MediaFrame(FrameKind kind, bool key, double ts, byte[] wire, int payloadLength, MediaFrame? config)
+    private MediaFrame(FrameKind kind, bool key, double ts, double dts, byte[] wire, int payloadLength, MediaFrame? config)
     {
-        Kind = kind; IsKey = key; Ts = ts; Wire = wire; PayloadLength = payloadLength; Config = config;
+        Kind = kind; IsKey = key; Ts = ts; Dts = dts; Wire = wire; PayloadLength = payloadLength; Config = config;
+    }
+
+    /// <summary>The codec bitstream (or, for config frames, the config payload described above).</summary>
+    public ReadOnlySpan<byte> Payload => Wire.AsSpan(Wire.Length - PayloadLength);
+
+    /// <summary>Config frames: the codec's configuration record (avcC, av1C, AudioSpecificConfig, OpusHead).</summary>
+    public ReadOnlySpan<byte> Description
+    {
+        get
+        {
+            var p = Payload;
+            return p[(1 + p[0] + 5)..];
+        }
     }
 
     public bool IsVideo => Kind == FrameKind.Video;
     public bool IsAudio => Kind == FrameKind.Audio;
 
-    public static MediaFrame Create(FrameKind kind, bool key, double ts, ReadOnlySpan<byte> payload, MediaFrame? config = null)
+    public static MediaFrame Create(FrameKind kind, bool key, double ts, ReadOnlySpan<byte> payload, MediaFrame? config = null,
+        double dts = double.NaN)
     {
         int msgLen = HeaderSize + payload.Length;
         int hdr = WsFrame.HeaderLength(msgLen);
@@ -57,7 +73,7 @@ public sealed class MediaFrame
         m[1] = key ? FlagKey : (byte)0;
         BinaryPrimitives.WriteDoubleLittleEndian(m[4..], ts);
         payload.CopyTo(m[HeaderSize..]);
-        return new MediaFrame(kind, key, ts, wire, payload.Length, config);
+        return new MediaFrame(kind, key, ts, double.IsNaN(dts) ? ts : dts, wire, payload.Length, config);
     }
 
     public static MediaFrame CreateConfig(FrameKind kind, string codec, int sampleRate, int channels, ReadOnlySpan<byte> description, double ts)

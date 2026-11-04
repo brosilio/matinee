@@ -27,5 +27,7 @@
     <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Access/Httpgrl.Modules.Access.csproj" />
     <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Compression/Httpgrl.Modules.Compression.csproj" />
     <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Status/Httpgrl.Modules.Status.csproj" />
+    <!-- proxy_pass and tunnel_accept: the cloud instance reaches a home instance through httpgrl's reverse tunnel. -->
+    <ProjectReference Include="$(HttpgrlRoot)src/Httpgrl.Modules.Proxy/Httpgrl.Modules.Proxy.csproj" />
   </ItemGroup>
 </Project>

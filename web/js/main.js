@@ -63,6 +63,7 @@ function start(nick, pass) {
       connState = s;
       if (s === 'open') {
         gate.hidden = true;
+        player.tier = null;   // a new connection starts on the source
         chat.setMe(detail.nick);
         player.setDelays(detail.delay, detail.maxDelay, detail.mode);
         player.reset();
@@ -90,6 +91,7 @@ function start(nick, pass) {
         case 'line': chat.addLine(m); break;
         case 'floor': chat.setFloor(m); break;
         case 'took': chat.onTook(m.x); break;
+        case 'tier': player.tier = m.name; break;   // which rendition we're watching (source, or a re-encode)
       }
     },
     onBinary: (buf) => player.onBinary(buf),
@@ -123,6 +125,7 @@ setInterval(() => {
   const s = player.stats;
   statsEl.textContent =
     `rtt ${conn.clock.rtt.toFixed(0)}ms · ahead ${player.bufferedAhead().toFixed(0)}ms · extra delay ${player.extra.toFixed(0)}ms\n` +
+    `stream ${player.tier || 'source'}\n` +
     `frames rx ${s.rx} decoded ${s.decoded} drawn ${s.drawn} late ${s.late} dropped ${s.dropped} audio-late ${s.audioLate} errors ${s.errors}\n` +
     `${(s.bytes / 1048576).toFixed(1)} MiB`;
 }, 500);

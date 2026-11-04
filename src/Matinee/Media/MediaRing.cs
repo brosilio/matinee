@@ -117,6 +117,25 @@ public sealed class MediaRing
         }
     }
 
+    /// <summary>Seq of the oldest buffered video keyframe later than media time <paramref name="ts"/>, or -1.</summary>
+    public long KeyAfter(double ts)
+    {
+        lock (_lock)
+        {
+            long n = Math.Min(_keyHead, _keys.Length);
+            long found = -1;
+            for (long i = 1; i <= n; i++)
+            {
+                long k = _keys[(_keyHead - i) & _keyMask];
+                if (k < _tail) break;
+                var f = _buf[k & _mask];
+                if (f is null || f.Ts <= ts) break;
+                found = k;
+            }
+            return found;
+        }
+    }
+
     /// <summary>Seq of the newest video keyframe at or before media time <paramref name="ts"/>, or -1.</summary>
     public long KeyAtOrBefore(double ts)
     {

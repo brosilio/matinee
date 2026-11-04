@@ -17,8 +17,8 @@ namespace Matinee.Net;
 /// </summary>
 public struct ClientMessage
 {
-    public string? T, Nick, Pass, Tok, X, K;
-    public double C, A, B;
+    public string? T, Nick, Pass, Tok, X, K, Key;
+    public double C, A, B, Id, Kbps;
     public bool HasA, HasB, On;
 
     public static bool TryParse(ReadOnlySpan<byte> json, out ClientMessage m)
@@ -41,6 +41,9 @@ public struct ClientMessage
                 else if (name.SequenceEqual("tok"u8)) m.Tok = Str(ref r);
                 else if (name.SequenceEqual("x"u8)) m.X = Str(ref r);
                 else if (name.SequenceEqual("k"u8)) m.K = Str(ref r);
+                else if (name.SequenceEqual("key"u8)) m.Key = Str(ref r);
+                else if (name.SequenceEqual("id"u8)) m.Id = Num(ref r);
+                else if (name.SequenceEqual("kbps"u8)) m.Kbps = Num(ref r);
                 else if (name.SequenceEqual("c"u8)) m.C = Num(ref r);
                 else if (name.SequenceEqual("a"u8)) { m.A = Num(ref r); m.HasA = r.TokenType == JsonTokenType.Number; }
                 else if (name.SequenceEqual("b"u8)) { m.B = Num(ref r); m.HasB = r.TokenType == JsonTokenType.Number; }

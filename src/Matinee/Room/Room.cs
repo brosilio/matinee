@@ -31,6 +31,14 @@ public sealed class Room : IFloorSink, IAsyncDisposable
     private readonly SyncTimeline _timeline = new();
 
     public MediaRing Ring { get; }
+    /// <summary>The stream as ingested. Viewers on slow links may watch a re-encode instead (see <see cref="Adaptive"/>).</summary>
+    public Rendition Source { get; }
+    private readonly Adaptive _adapt;
+    /// <summary>When set (an uplinked cloud instance), re-encodes are requested from home instead of run here.</summary>
+    internal Func<int, Rendition>? RemoteEncoders { get; set; }
+    private readonly List<Task> _stopping = new();
+    private long _sourceBytes;
+    private int _ticks;
     public StreamSettings Settings { get; private set; }
     public StreamMode Mode => Settings.Mode;
     public bool Live { get; private set; }
@@ -42,6 +50,11 @@ public sealed class Room : IFloorSink, IAsyncDisposable
         Settings = settings;
         _log = log;
         Ring = new MediaRing(retainMs: settings.EffectiveBufferMs);
+        Source = Rendition.Source(Ring);
+        _adapt = new Adaptive(Source,
+            kbps => RemoteEncoders?.Invoke(kbps) ?? Transcoder.Start(Ring, kbps, Settings.Adapt, WakeAll, _log),
+            r => { lock (_stopping) { _stopping.RemoveAll(t => t.IsCompleted); _stopping.Add(r.Encoder!.StopAsync()); } },
+            log);
         _floor = new Floor(this);
         ResetTimeline();
         _ticker = TickLoop();
@@ -66,8 +79,20 @@ public sealed class Room : IFloorSink, IAsyncDisposable
     public void Append(MediaFrame f)
     {
         Ring.Append(f);
+        Interlocked.Add(ref _sourceBytes, f.PayloadLength);
+        WakeAll();
+    }
+
+    internal void WakeAll()
+    {
         lock (_lock)
             foreach (var v in _viewers) v.Wake();
+    }
+
+    /// <summary>The renditions currently available: the source and any re-encodes.</summary>
+    public string[] RenditionLabels()
+    {
+        lock (_lock) return [Source.Label, .. _adapt.Renditions.Select(r => r.Label)];
     }
 
     public void StreamStarted()
@@ -75,6 +100,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
         lock (_lock)
         {
             Live = true;
+            _adapt.StopAll(_viewers);
             ResetTimeline();
             foreach (var v in _viewers) v.ResetMedia();
             BroadcastLocked(StatusFrame());
@@ -88,6 +114,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
         lock (_lock)
         {
             Live = false;
+            _adapt.StopAll(_viewers);
             BroadcastLocked(StatusFrame());
         }
         Ring.Wake();
@@ -95,14 +122,14 @@ public sealed class Room : IFloorSink, IAsyncDisposable
     }
 
     /// <summary>Where a viewer with no position starts: the keyframe nearest the playhead (or the newest one).</summary>
-    internal long StartSeq()
+    internal long StartSeq(MediaRing ring)
     {
         if (Mode == StreamMode.Sync)
         {
-            long k = Ring.KeyAtOrBefore(Playhead(Clock.NowMs));
+            long k = ring.KeyAtOrBefore(Playhead(Clock.NowMs));
             if (k >= 0) return k;
         }
-        return Ring.LatestKey();
+        return ring.LatestKey();
     }
 
     /// <summary>Media time a viewer may be sent up to. Live mode: everything.</summary>
@@ -457,6 +484,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
                     double now = Clock.NowMs;
                     _floor.Tick(now);
                     TickSyncLocked(now);
+                    if (++_ticks % 4 == 0 && Live) _adapt.Tick(now, _viewers, Settings.Adapt, Interlocked.Read(ref _sourceBytes));
                 }
             }
         }
@@ -500,6 +528,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
                 AddLineLocked(null,
                     $"@{e.Nick} has slow net; pausing for up to {Math.Max(1, (int)Math.Ceiling(e.PauseBudgetMs / 1000))}s so they can catch up",
                     LineKind.System);
+                _adapt.Struggled(e.ViewerId);   // a lighter stream may keep this from happening again
                 break;
             case SyncEventKind.Resume:
                 AddLineLocked(null, "buffer recovered; resuming at 1.05× until everyone is back at the live delay", LineKind.System);
@@ -523,8 +552,15 @@ public sealed class Room : IFloorSink, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
-        lock (_lock) foreach (var v in _viewers) v.Kick("server shutting down");
+        lock (_lock)
+        {
+            foreach (var v in _viewers) v.Kick("server shutting down");
+            _adapt.StopAll(_viewers);
+        }
         await _ticker.ConfigureAwait(false);
+        Task[] stopping;
+        lock (_stopping) stopping = [.. _stopping];
+        await Task.WhenAll(stopping).ConfigureAwait(false);
     }
 
     /// <summary>Per-viewer message rate limit.</summary>

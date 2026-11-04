@@ -130,8 +130,10 @@ export class Player {
     this.stats.bytes += buf.byteLength;
 
     switch (kind) {
-      case KIND_VCONFIG: return this.configVideo(parseConfig(payload));
-      case KIND_ACONFIG: return this.configAudio(parseConfig(payload));
+      // A config takes effect where it sits in the stream: frames queued before it belong to the old one (a
+      // rendition switch sends a new config, then the new rendition's keyframe).
+      case KIND_VCONFIG: return this.queueConfig(this.vchunks, parseConfig(payload), (c) => this.configVideo(c), !this.vdec);
+      case KIND_ACONFIG: return this.queueConfig(this.achunks, parseConfig(payload), (c) => this.configAudio(c), !this.adec);
       case KIND_VIDEO: this.arrived(ts); return this.queueVideo(key, ts, payload);
       case KIND_AUDIO: this.arrived(ts); return this.queueAudio(ts, payload);
     }
@@ -156,7 +158,10 @@ export class Player {
     this.minSlack = Math.min(this.minSlack, slack);
     if (now - this.slackWindowStart > 5000) {
       // A whole window with plenty of slack: give some delay back.
-      if (this.extra > 0 && this.minSlack > EXTRA_MARGIN_MS * 2) this.extra = Math.max(0, this.extra - 100);
+      // Give back up to half the spare margin per window (at least 100 ms, at most 500 ms): quick after a rough
+      // patch that left lots of slack, gentle when it's close.
+      const spare = this.minSlack - EXTRA_MARGIN_MS * 2;
+      if (this.extra > 0 && spare > 0) this.extra = Math.max(0, this.extra - Math.min(500, Math.max(100, spare / 2)));
       this.minSlack = Infinity;
       this.slackWindowStart = now;
     }
@@ -173,10 +178,10 @@ export class Player {
   }
 
   openVideo() {
+    // Decoded frames and queued chunks survive: frames are independent of the decoder, and the queue's next frame
+    // after a config is a keyframe for the new one.
     const c = this.vcfg;
     if (this.vdec && this.vdec.state !== 'closed') { try { this.vdec.close(); } catch { } }
-    this.dropFrames();
-    this.vchunks.length = 0;
     this.needKey = true;
     const cfg = { codec: c.codec, optimizeForLatency: true };
     if (c.description.byteLength) cfg.description = c.description;
@@ -218,6 +223,26 @@ export class Player {
     }
   }
 
+  queueConfig(queue, c, apply, now) {
+    if (!c) return;
+    if (now && queue.length === 0) apply(c);
+    else queue.push({ cfg: c, apply });
+  }
+
+  /** Apply a config marker at the head of a queue: flush the old decoder first, so frames already decoding finish. */
+  takeConfig(queue, dec, busyKey) {
+    const head = queue[0];
+    if (!head || !head.cfg) return false;
+    if (this[busyKey]) return true;
+    if (!dec || dec.state !== 'configured') { queue.shift(); head.apply(head.cfg); return false; }
+    this[busyKey] = true;
+    dec.flush().catch(() => { }).finally(() => {
+      this[busyKey] = false;
+      if (queue[0] === head) { queue.shift(); head.apply(head.cfg); }
+    });
+    return true;
+  }
+
   queueVideo(key, ts, data) {
     this.vchunks.push({ key, ts, data });
     if (this.vchunks.length <= MAX_VIDEO_CHUNKS) return;
@@ -228,17 +253,22 @@ export class Player {
       if (this.vchunks[i].key) { keep = i; break; }
     }
     const n = keep > 0 ? keep : 1;
-    this.vchunks.splice(0, n);
+    const removed = this.vchunks.splice(0, n);
+    for (let i = removed.length - 1; i >= 0; i--) {
+      if (removed[i].cfg) { this.vchunks.unshift(removed[i]); break; }   // keep the newest config
+    }
     this.stats.dropped += n;
     this.needKey = true;
   }
 
   pumpVideo() {
+    if (this.takeConfig(this.vchunks, this.vdec, 'vflushing')) return;
     const dec = this.vdec;
     if (!dec || dec.state !== 'configured') return;
     const horizon = this.playhead() + VIDEO_DECODE_AHEAD_MS;
     while (this.vchunks.length && dec.decodeQueueSize <= 8) {
       const c = this.vchunks[0];
+      if (c.cfg) { this.takeConfig(this.vchunks, dec, 'vflushing'); return; }
       if (c.ts > horizon) break;
       this.vchunks.shift();
       this.decodeVideo(c.key, c.ts, c.data);
@@ -312,10 +342,6 @@ export class Player {
       console.warn('audio config rejected', cfg.codec, e);
       this.stats.errors++;
     }
-    this.achunks.length = 0;
-    this.audio.length = 0;
-    this.stopAudioSources();
-    this.nextAudio = 0;
   }
 
   decodeAudio(ts, data) {
@@ -340,11 +366,13 @@ export class Player {
   }
 
   pumpAudio() {
+    if (this.takeConfig(this.achunks, this.adec, 'aflushing')) return;
     const dec = this.adec;
     if (!dec || dec.state !== 'configured' || !this.actx) return;
     const horizon = this.playhead() + AUDIO_DECODE_AHEAD_MS;
     while (this.achunks.length && dec.decodeQueueSize <= 20) {
       const c = this.achunks[0];
+      if (c.cfg) { this.takeConfig(this.achunks, dec, 'aflushing'); return; }
       if (c.ts > horizon) break;
       this.achunks.shift();
       this.decodeAudio(c.ts, c.data);

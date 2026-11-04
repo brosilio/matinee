@@ -13,7 +13,6 @@ namespace Matinee.Rtmp;
 internal sealed class FfmpegRelay
 {
     private const int MaxQueuedBytes = 16 << 20;
-    private static ReadOnlySpan<byte> FlvHeader => [0x46, 0x4c, 0x56, 1, 5, 0, 0, 0, 9, 0, 0, 0, 0];
 
     private readonly Process _process;
     private readonly ILogger _log;
@@ -106,29 +105,14 @@ internal sealed class FfmpegRelay
         }
     }
 
-    internal static byte[] BuildTag(byte type, uint timestamp, ReadOnlySpan<byte> body)
-    {
-        if (body.Length > 0xFF_FFFF) throw new InvalidDataException("FLV tag is too large");
-        var tag = new byte[11 + body.Length + 4];
-        tag[0] = type;
-        tag[1] = (byte)(body.Length >> 16);
-        tag[2] = (byte)(body.Length >> 8);
-        tag[3] = (byte)body.Length;
-        tag[4] = (byte)(timestamp >> 16);
-        tag[5] = (byte)(timestamp >> 8);
-        tag[6] = (byte)timestamp;
-        tag[7] = (byte)(timestamp >> 24);
-        body.CopyTo(tag.AsSpan(11));
-        BinaryPrimitives.WriteUInt32BigEndian(tag.AsSpan(11 + body.Length), (uint)(11 + body.Length));
-        return tag;
-    }
+    internal static byte[] BuildTag(byte type, uint timestamp, ReadOnlySpan<byte> body) => Media.Flv.Tag(type, timestamp, body);
 
     private async Task PumpAsync()
     {
         try
         {
             var output = _process.StandardInput.BaseStream;
-            await output.WriteAsync(FlvHeader.ToArray(), _abort.Token).ConfigureAwait(false);
+            await output.WriteAsync(Media.Flv.Header.ToArray(), _abort.Token).ConfigureAwait(false);
             while (true)
             {
                 byte[]? tag = null;

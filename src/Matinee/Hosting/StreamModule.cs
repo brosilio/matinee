@@ -21,6 +21,17 @@ namespace Matinee.Hosting;
 ///     congestion  1500ms;        # unacked media in flight before dropping video for a viewer
 ///     buffer      10s;           # media kept (sync mode: at least 60s)
 ///     max_viewers 50;
+///
+///     adapt              on;         # re-encode for viewers who can't keep up (needs ffmpeg)
+///     adapt_ffmpeg       ffmpeg;
+///     adapt_transcoders  1;          # at most this many re-encodes at once
+///     adapt_drop         5%;         # share of video dropped (over adapt_window) that moves a viewer down
+///     adapt_window       10s;
+///     adapt_headroom     70%;        # share of a viewer's measured throughput a re-encode may use
+///     adapt_min_bitrate  200k;       # kbit/s
+///     adapt_audio_bitrate 64k;
+///     adapt_preset       veryfast;   # x264 preset
+///     adapt_args         ...;        # extra ffmpeg output arguments
 /// }
 /// http { server { location = /ws { matinee_ws; } } }
 /// </code>
@@ -34,6 +45,7 @@ public sealed class StreamModule(Engine engine) : IModule
 
     private StreamSettings _s = new();
     private bool _seenBlock;
+    private bool _uplinkEndpoint;
 
     public string Name => "matinee";
 
@@ -68,6 +80,62 @@ public sealed class StreamModule(Engine engine) : IModule
         r.AddDirective(new() { Name = "ingest_key", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => _s = _s with { IngestKey = NonEmpty(i, 0) } });
         r.AddDirective(new() { Name = "proxy_pass", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => _s = _s with { ProxyPass = ProxyUrl(i) } });
         r.AddDirective(new() { Name = "proxy_ffmpeg", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => _s = _s with { ProxyFfmpeg = NonEmpty(i, 0) } });
+        r.AddDirective(new() { Name = "adapt", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { Enabled = i.Flag(0) }) });
+        r.AddDirective(new() { Name = "adapt_ffmpeg", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { Ffmpeg = NonEmpty(i, 0) }) });
+        r.AddDirective(new() { Name = "adapt_transcoders", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { MaxTranscoders = Range(i, i.Int(0), 1, 16) }) });
+        r.AddDirective(new() { Name = "adapt_drop", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { DropThreshold = Percent(i, 0.001, 0.9) }) });
+        r.AddDirective(new() { Name = "adapt_window", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { WindowMs = Range(i, i.Millis(0), 2000, 120_000) }) });
+        r.AddDirective(new() { Name = "adapt_headroom", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { Headroom = Percent(i, 0.1, 1) }) });
+        r.AddDirective(new() { Name = "adapt_min_bitrate", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { MinKbps = Kbps(i, 50, 50_000) }) });
+        r.AddDirective(new() { Name = "adapt_audio_bitrate", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { AudioKbps = Kbps(i, 16, 512) }) });
+        r.AddDirective(new()
+        {
+            Name = "adapt_preset", Contexts = b, MinArgs = 1, MaxArgs = 1,
+            Handler = i => Adapt(a => a with
+            {
+                Preset = i.Args[0] is "ultrafast" or "superfast" or "veryfast" or "faster" or "fast" or "medium"
+                    ? i.Args[0] : throw i.Error("expected an x264 preset (ultrafast .. medium)"),
+            }),
+        });
+        r.AddDirective(new()
+        {
+            Name = "adapt_encoder", Contexts = b, MinArgs = 1, MaxArgs = 1,
+            Handler = i => Adapt(a => a with
+            {
+                Encoder = i.Args[0] switch
+                {
+                    "x264" => Media.AdaptEncoder.X264,
+                    "vaapi" => Media.AdaptEncoder.Vaapi,
+                    _ => throw i.Error("expected \"x264\" or \"vaapi\""),
+                },
+            }),
+        });
+        r.AddDirective(new() { Name = "adapt_vaapi_device", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { VaapiDevice = NonEmpty(i, 0) }) });
+        r.AddDirective(new() { Name = "adapt_budget", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Adapt(a => a with { BudgetKbps = Kbps(i, 100, 10_000_000) }) });
+        r.AddDirective(new() { Name = "uplink_key", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => _s = _s with { UplinkKey = NonEmpty(i, 0) } });
+        r.AddDirective(new()
+        {
+            Name = "uplink_pull", Contexts = b, MinArgs = 2, MaxArgs = 2,
+            Handler = i =>
+            {
+                if (!Uri.TryCreate(i.Args[0], UriKind.Absolute, out var u) || u.Scheme is not ("ws" or "wss"))
+                    throw i.Error($"invalid URL \"{i.Args[0]}\", expected ws:// or wss://");
+                _s = _s with { UplinkPull = u, UplinkPullKey = NonEmpty(i, 1) };
+            },
+        });
+        r.AddDirective(new()
+        {
+            Name = "matinee_uplink", Contexts = [ContextKind.Location],
+            Handler = i =>
+            {
+                var c = i.Conf<LocationHandlerConf>();
+                if (c.Handler is not null) throw i.Error($"location already handled by {c.Owner}");
+                c.Handler = HandleUplink;
+                c.Owner = Name;
+                _uplinkEndpoint = true;
+            },
+        });
+        r.AddDirective(new() { Name = "adapt_args", Contexts = b, MinArgs = 1, MaxArgs = 128, Handler = i => Adapt(a => a with { ExtraArgs = [.. i.Args] }) });
         r.AddDirective(new() { Name = "proxy_args", Contexts = b, MinArgs = 1, MaxArgs = 128, Handler = i => _s = _s with { ProxyArgs = [.. i.Args] } });
 
         r.AddDirective(new()
@@ -89,9 +157,23 @@ public sealed class StreamModule(Engine engine) : IModule
         if (_s.IngestListen is not null && _s.IngestKey is null) throw new ConfigException("matinee: ingest_listen needs an ingest_key");
         if (_s.ProxyPass is not null && _s.IngestListen is null) throw new ConfigException("matinee: proxy_pass needs ingest_listen");
         if (_s.Password is null) setup.Log.Warn("matinee: no password set, anyone can watch and chat");
+        if (_s.UplinkPull is not null && _s.IngestListen is not null)
+            throw new ConfigException("matinee: uplink_pull and ingest_listen are two different sources; use one");
+        if (_uplinkEndpoint && _s.UplinkKey is null) throw new ConfigException("matinee: matinee_uplink needs an uplink_key");
+        if (_s.Adapt.Enabled && _s.UplinkPull is null && _s.Adapt.BudgetKbps > 0)
+            setup.Log.Warn("matinee: adapt_budget only applies to re-encodes made by an uplinked home instance");
     }
 
-    private async ValueTask<HandlerResult> HandleWebSocket(HttpContext ctx)
+    private ValueTask<HandlerResult> HandleWebSocket(HttpContext ctx) =>
+        // Viewers survive reloads: the engine outlives this configuration, so ConfigurationRetired is ignored
+        // (reload_drain_timeout still applies; clients reconnect seamlessly). Shutdown and resets come via Aborted.
+        Upgrade(ctx, stream => engine.Room.RunViewerAsync(stream, ctx.Connection.RemoteAddress, ctx.Aborted));
+
+    private ValueTask<HandlerResult> HandleUplink(HttpContext ctx) =>
+        Upgrade(ctx, stream => UplinkServer.ServeAsync(stream, engine, ctx.Log, ctx.Connection.RemoteAddress, ctx.Aborted));
+
+    /// <summary>Validate a WebSocket upgrade, switch protocols, and run <paramref name="serve"/> on the stream.</summary>
+    private static async ValueTask<HandlerResult> Upgrade(HttpContext ctx, Func<Stream, Task> serve)
     {
         var req = ctx.Request;
         if (!ReferenceEquals(req.Method, HttpMethods.Get)) return HandlerResult.WithStatus(405);
@@ -106,10 +188,7 @@ public sealed class StreamModule(Engine engine) : IModule
         ctx.Response.Headers.Set("Connection", "Upgrade");
         ctx.Response.Headers.Set("Sec-WebSocket-Accept", accept);
         var stream = await ctx.UpgradeAsync(WsIdleMs).ConfigureAwait(false);
-
-        // Viewers survive reloads: the engine outlives this configuration, so ConfigurationRetired is ignored
-        // (reload_drain_timeout still applies; clients reconnect seamlessly). Shutdown and resets come via Aborted.
-        await engine.Room.RunViewerAsync(stream, ctx.Connection.RemoteAddress, ctx.Aborted).ConfigureAwait(false);
+        await serve(stream).ConfigureAwait(false);
         return HandlerResult.Done;
     }
 
@@ -134,6 +213,30 @@ public sealed class StreamModule(Engine engine) : IModule
 
     private static int Range(DirectiveInvocation i, int v, int min, int max) =>
         v >= min && v <= max ? v : throw i.Error($"must be between {min} and {max}");
+
+    private void Adapt(Func<Media.AdaptSettings, Media.AdaptSettings> change) => _s = _s with { Adapt = change(_s.Adapt) };
+
+    /// <summary>"5%" or a fraction ("0.05").</summary>
+    private static double Percent(DirectiveInvocation i, double min, double max)
+    {
+        var a = i.Args[0];
+        bool pct = a.EndsWith('%');
+        if (!double.TryParse(pct ? a[..^1] : a, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) || !double.IsFinite(v))
+            throw i.Error($"invalid value \"{a}\", expected a percentage like 5%");
+        if (pct) v /= 100;
+        return v >= min && v <= max ? v : throw i.Error($"must be between {min * 100}% and {max * 100}%");
+    }
+
+    /// <summary>A bitrate in kbit/s: "200k", "1m", or a bare number of kbit/s.</summary>
+    private static int Kbps(DirectiveInvocation i, int min, int max)
+    {
+        var a = i.Args[0];
+        int mul = 1;
+        if (a.EndsWith('k') || a.EndsWith('K')) a = a[..^1];
+        else if (a.EndsWith('m') || a.EndsWith('M')) { a = a[..^1]; mul = 1000; }
+        if (!int.TryParse(a, System.Globalization.NumberStyles.None, null, out var v)) throw i.Error($"invalid bitrate \"{i.Args[0]}\"");
+        return Range(i, v * mul, min, max);
+    }
 
     private static IPEndPoint ParseEndPoint(DirectiveInvocation i)
     {

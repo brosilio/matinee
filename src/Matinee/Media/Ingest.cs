@@ -4,24 +4,24 @@ namespace Matinee.Media;
 
 /// <summary>
 /// One publisher's stream: turns FLV video/audio tag bodies (as carried by RTMP, legacy or Enhanced RTMP) into
-/// <see cref="MediaFrame"/>s on the server clock and hands them to the room.
-///
-/// <b>Timestamps.</b> A frame's source timestamp plus an offset gives its server-clock time. The offset tracks the
-/// latest-arriving frames: a frame that arrives after its stamped time pushes the offset up (so frames are never
-/// stamped in the past at ingest, which would eat the viewers' delay budget); otherwise the offset decays slowly
-/// back down, so one network spike between OBS and us doesn't add latency forever. A jump of more than 2 s
-/// (a new publisher, a timestamp reset) re-anchors. Audio and video share the offset, which keeps them in sync.
+/// <see cref="MediaFrame"/>s on the server clock (see <see cref="ClockMapper"/>) and hands them to the room.
 /// </summary>
-public sealed class IngestSession(Action<MediaFrame> append, ILogger log)
+/// <remarks>
+/// With <paramref name="fixedStamp"/>, source timestamps are already on the server timeline (a transcoder's output,
+/// fed with server-clock times): they're mapped exactly, with no jitter handling.
+/// </remarks>
+public sealed class IngestSession(Action<MediaFrame> append, ILogger log, Func<double>? clock = null,
+    Func<double, double>? fixedStamp = null)
 {
-    private const double ReanchorMs = 2000;
-    private const double DecayPerFrameMs = 0.1;
-
-    private double _offset = double.NaN;
+    private readonly ClockMapper _clock = new(log, "ingest", clock);
     private long _srcHigh;                      // unwrapped 32-bit RTMP timestamps
     private uint _lastSrc;
     private bool _haveSrc;
-    private double _lastVideo = double.NegativeInfinity, _lastAudio = double.NegativeInfinity;
+    private double _lastVideoDts = double.NegativeInfinity, _lastAudio = double.NegativeInfinity;
+    private bool _videoNeedsKey = true;
+
+    /// <summary>Frames dropped at ingest to cut latency (see <see cref="ClockMapper"/>).</summary>
+    public long Skipped { get; private set; }
 
     public MediaFrame? VideoConfig { get; private set; }
     public MediaFrame? AudioConfig { get; private set; }
@@ -40,15 +40,9 @@ public sealed class IngestSession(Action<MediaFrame> append, ILogger log)
         return _srcHigh + ts;
     }
 
-    /// <summary>Server-clock time for a source decode timestamp (ms).</summary>
-    private double Stamp(double srcMs)
-    {
-        double now = Clock.NowMs;
-        if (double.IsNaN(_offset) || Math.Abs(now - (srcMs + _offset)) > ReanchorMs) _offset = now - srcMs;
-        else if (srcMs + _offset < now) _offset = now - srcMs;
-        else _offset -= DecayPerFrameMs;
-        return srcMs + _offset;
-    }
+    private double Stamp(double srcMs) => fixedStamp?.Invoke(srcMs) ?? _clock.Map(srcMs);
+
+    private static bool Behind(ref double stamp, double last) => ClockMapper.Behind(ref stamp, last);
 
     public void OnVideo(uint rtmpTs, ReadOnlySpan<byte> body)
     {
@@ -118,10 +112,14 @@ public sealed class IngestSession(Action<MediaFrame> append, ILogger log)
             return;
         }
         if (VideoConfig is null || data.IsEmpty) return;
-        double ts = Stamp(dts) + cts;
-        if (ts <= _lastVideo) ts = _lastVideo + 0.001;
-        if (cts == 0) _lastVideo = ts;   // with B-frames (cts != 0) presentation order isn't monotonic
-        var f = MediaFrame.Create(FrameKind.Video, frameType == 1, ts, data, VideoConfig);
+        bool key = frameType == 1;
+        // Ordering is checked on decode time; with B-frames, presentation time (dts + cts) isn't monotonic.
+        double stampedDts = Stamp(dts);
+        if (Behind(ref stampedDts, _lastVideoDts)) { _videoNeedsKey = true; Skipped++; return; }
+        if (_videoNeedsKey && !key) { Skipped++; return; }
+        _videoNeedsKey = false;
+        _lastVideoDts = stampedDts;
+        var f = MediaFrame.Create(FrameKind.Video, key, stampedDts + cts, data, VideoConfig, stampedDts);
         Frames++;
         Bytes += data.Length;
         append(f);
@@ -176,7 +174,7 @@ public sealed class IngestSession(Action<MediaFrame> append, ILogger log)
         }
         if (AudioConfig is null || data.IsEmpty) return;
         double ts = Stamp(dts);
-        if (ts <= _lastAudio) ts = _lastAudio + 0.001;
+        if (Behind(ref ts, _lastAudio)) { Skipped++; return; }
         _lastAudio = ts;
         Frames++;
         Bytes += data.Length;

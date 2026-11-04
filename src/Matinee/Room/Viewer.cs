@@ -16,8 +16,12 @@ namespace Matinee.Room;
 /// <see cref="StreamSettings.CongestionMs"/>, video is dropped up to the next keyframe it can afford (audio
 /// keeps flowing unless things are much worse). If the cursor falls behind the live edge by more than that, it
 /// jumps straight to the newest keyframe. A slow viewer never builds up delay: they miss content instead.
+///
+/// <b>Renditions.</b> The viewer watches one <see cref="Rendition"/> (the source, or a re-encode for slow links).
+/// Switching happens at the new rendition's first keyframe after what this viewer has already been sent, so time
+/// never jumps backwards: video holds until that keyframe, and audio already sent is never sent twice.
 /// </summary>
-public sealed class Viewer
+public sealed class Viewer : IAdaptViewer
 {
     private const int MaxQueuedControl = 4096;
 
@@ -33,6 +37,19 @@ public sealed class Viewer
     private bool _waitKey = true;
     private MediaFrame? _sentVideoCfg, _sentAudioCfg;
     private double _lastSentTs = double.NaN;
+    private double _lastVideoTs = double.NegativeInfinity, _lastVideoDts = double.NegativeInfinity, _lastAudioTs = double.NegativeInfinity;
+    private Rendition _rendition;
+    private Rendition? _pending;
+    private double _switchSince = double.NaN;
+    private const double SwitchTimeoutMs = 4000;
+
+    // Throughput measurement: (timestamp, cumulative media bytes) of frames sent, so an ack of a timestamp tells
+    // how many bytes the client has received. Written by the sender, read by the reader (acks), under _sentLock.
+    private readonly Lock _sentLock = new();
+    private readonly double[] _sentTs = new double[4096];
+    private readonly long[] _sentBytes = new long[4096];
+    private int _sentHead, _sentCount;
+    private long _mediaBytes, _ackedBytes;
 
     // Written by the reader task, read by the sender.
     private double _ackTs = double.NaN;
@@ -58,12 +75,22 @@ public sealed class Viewer
 
     public long FramesSent { get; private set; }
     public long FramesDropped { get; private set; }
+    /// <summary>Video frames sent and dropped by the congestion policy (switch gaps aren't drops).</summary>
+    public long VideoSent { get; private set; }
+    public long VideoDropped { get; private set; }
+    /// <summary>Media bytes the client has acknowledged receiving.</summary>
+    public long AckedBytes => Interlocked.Read(ref _ackedBytes);
+    /// <summary>The rendition this viewer is watching.</summary>
+    public Rendition Rendition => Volatile.Read(ref _rendition);
+    /// <summary>A switch is waiting for the target's next keyframe.</summary>
+    public Rendition? PendingRendition => Volatile.Read(ref _pending);
     public long BytesSent { get; private set; }
     public int Skips { get; private set; }
 
     internal Viewer(int id, Stream stream, Room room, string remote, CancellationToken ct)
     {
         Id = id;
+        _rendition = room.Source;
         _stream = stream;
         _room = room;
         Remote = remote;
@@ -92,6 +119,29 @@ public sealed class Viewer
         if (!double.IsFinite(ts)) return;
         Volatile.Write(ref _ackTs, ts);
         Volatile.Write(ref _ackAt, Clock.NowMs);
+        lock (_sentLock)
+        {
+            // Bytes up to the newest sent frame at or before the acked timestamp have arrived.
+            long acked = -1;
+            int cap = _sentTs.Length;
+            while (_sentCount > 0 && _sentTs[_sentHead] <= ts)
+            {
+                acked = _sentBytes[_sentHead];
+                _sentHead = (_sentHead + 1) % cap;
+                _sentCount--;
+            }
+            if (acked > _ackedBytes) Interlocked.Exchange(ref _ackedBytes, acked);
+        }
+    }
+
+    void IAdaptViewer.SwitchTo(Rendition r) => SwitchTo(r);
+
+    /// <summary>Move to <paramref name="r"/> at its next keyframe (see class remarks).</summary>
+    internal void SwitchTo(Rendition r)
+    {
+        if (ReferenceEquals(r, Rendition) && PendingRendition is null) return;
+        Volatile.Write(ref _pending, ReferenceEquals(r, Rendition) ? null : r);
+        _signal.Set();
     }
 
     public string? KickReason { get; private set; }
@@ -126,6 +176,10 @@ public sealed class Viewer
                     _waitKey = true;
                     _sentVideoCfg = _sentAudioCfg = null;
                     _lastSentTs = double.NaN;
+                    _lastVideoTs = _lastVideoDts = _lastAudioTs = double.NegativeInfinity;
+                    Volatile.Write(ref _rendition, _room.Source);
+                    Volatile.Write(ref _pending, null);
+                    _switchSince = double.NaN;
                 }
 
                 bool sentAny = false;
@@ -184,13 +238,61 @@ public sealed class Viewer
         await _stream.WriteAsync(f.Wire, ct).ConfigureAwait(false);
         BytesSent += f.Wire.Length;
         FramesSent++;
+        if (f.IsVideo) { VideoSent++; _lastVideoTs = Math.Max(_lastVideoTs, f.Ts); _lastVideoDts = Math.Max(_lastVideoDts, f.Dts); }
+        else _lastAudioTs = Math.Max(_lastAudioTs, f.Ts);
         if (double.IsNaN(_lastSentTs) || f.Ts > _lastSentTs) _lastSentTs = f.Ts;
+        lock (_sentLock)
+        {
+            _mediaBytes += f.Wire.Length;
+            int cap = _sentTs.Length;
+            if (_sentCount == cap) { _sentHead = (_sentHead + 1) % cap; _sentCount--; }
+            int i = (_sentHead + _sentCount) % cap;
+            _sentTs[i] = _lastSentTs;
+            _sentBytes[i] = _mediaBytes;
+            _sentCount++;
+        }
+    }
+
+    /// <summary>
+    /// Apply a pending rendition switch if the target has a keyframe after what we've sent. Until then, video from
+    /// the current rendition is held (there's no point sending frames we're about to leave); give up after a while.
+    /// </summary>
+    private bool SwitchPending()
+    {
+        var target = Volatile.Read(ref _pending);
+        if (target is null) return false;
+        double now = Clock.NowMs;
+        if (double.IsNaN(_switchSince)) _switchSince = now;
+        long k = target.Ring.KeyAfter(_lastVideoTs);
+        if (k >= 0)
+        {
+            Volatile.Write(ref _rendition, target);
+            Volatile.Write(ref _pending, null);
+            _switchSince = double.NaN;
+            _cursor = k;
+            _waitKey = false;
+            using (var j = JsonFrame.Start("tier"))
+            {
+                j.W.WriteString("name"u8, target.Label);
+                j.W.WriteNumber("kbps"u8, target.Kbps);
+                Send(j.Finish());
+            }
+            return false;
+        }
+        if (now - _switchSince > SwitchTimeoutMs || target.Failed)
+        {
+            Volatile.Write(ref _pending, null);
+            _switchSince = double.NaN;
+            return false;
+        }
+        return true;
     }
 
     /// <summary>The next frame to send, or null if there's nothing (yet). Applies the drop policy.</summary>
     private MediaFrame? NextMedia()
     {
-        var ring = _room.Ring;
+        bool holdVideo = SwitchPending();
+        var ring = _rendition.Ring;
         var s = _room.Settings;
         double horizon = _room.SendHorizon();   // sync mode: don't run further ahead of the playhead than this
 
@@ -198,7 +300,7 @@ public sealed class Viewer
         {
             if (_cursor < 0 || _cursor < ring.Tail)
             {
-                long start = _room.StartSeq();
+                long start = _room.StartSeq(ring);
                 if (start < 0) return null;
                 if (_cursor >= 0) { Skips++; }
                 _cursor = start;
@@ -210,6 +312,9 @@ public sealed class Viewer
             if (f.Ts > horizon) return null;
 
             if (f.Kind is FrameKind.VideoConfig or FrameKind.AudioConfig) { _cursor++; continue; }   // sent on demand
+            // Never send a time twice (after a rendition switch the new ring overlaps what was sent).
+            // (Video by decode time: with B-frames, presentation time isn't monotonic.)
+            if (f.IsVideo ? f.Dts <= _lastVideoDts || holdVideo : f.Ts <= _lastAudioTs) { _cursor++; continue; }
 
             double inflight = InFlightMs(f);
             if (_room.Mode == StreamMode.Live)
@@ -221,6 +326,7 @@ public sealed class Viewer
                     if (k > _cursor)
                     {
                         FramesDropped += k - _cursor;
+                        VideoDropped += k - _cursor;
                         Skips++;
                         _cursor = k;
                         continue;
@@ -234,6 +340,7 @@ public sealed class Viewer
                     {
                         _waitKey = true;
                         FramesDropped++;
+                        VideoDropped++;
                         _cursor++;
                         continue;
                     }
