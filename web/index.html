@@ -25,9 +25,14 @@
     <section id="chat">
       <div class="chat-box">
         <div class="chat-log" aria-live="polite"></div>
-        <div class="chat-live" hidden></div>
-        <div class="chat-prompt"><span class="gt">&gt;</span><input class="chat-input" maxlength="500"
-          autocomplete="off" spellcheck="true" aria-label="say something"></div>
+        <div class="line chat-live" hidden></div>
+        <!-- Your own line: the next line of the history. A transparent textarea over a mirror that shows each
+             word's state (typing / held / on air). -->
+        <div class="line chat-me" hidden>
+          <div class="chat-mirror" aria-hidden="true"></div>
+          <textarea class="chat-input" rows="1" maxlength="500" autocomplete="off" spellcheck="true"
+            aria-label="say something"></textarea>
+        </div>
         <div class="chat-status">&nbsp;</div>
         <div class="chat-hint" hidden></div>
       </div>

@@ -30,14 +30,26 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); f
 .line.sys { color: var(--dim); font-style: italic; }
 .line.clash { color: var(--clash); }
 .line.clash .who { opacity: .8; }
-.chat-live { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-live .w.fresh { animation: fade-in .35s ease-out; }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .caret { display: inline-block; width: .55em; height: 1em; background: var(--accent); vertical-align: text-bottom; animation: blink 1s steps(1) infinite; margin-left: 1px; }
 @keyframes blink { 50% { opacity: 0; } }
-.chat-prompt { display: flex; gap: .4rem; align-items: baseline; }
-.gt { color: var(--accent); }
-.chat-input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--fg); font: inherit; padding: 0; }
-.chat-input.holding { color: var(--accent); }
-.chat-input.waiting { color: var(--dim); }
+
+/* Your line: a textarea with transparent text laid exactly over a mirror that draws the text. Same font, same
+   wrapping, same first-line indent (your nick), so it reads as the next history line. */
+.chat-me { display: grid; }
+.chat-me > * { grid-area: 1 / 1; margin: 0; padding: 0; border: 0; font: inherit; line-height: inherit;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.chat-input { background: transparent; color: transparent; caret-color: var(--accent); outline: 0; resize: none;
+  overflow: hidden; height: 100%; min-height: 1.4em; }
+.chat-input::selection { background: #e8b44c55; color: transparent; }
+.chat-mirror .w.typing { color: var(--dim); }
+.chat-mirror .w.held { color: var(--dim); text-decoration: underline dotted #555; text-underline-offset: 3px; }
+.chat-mirror .w.pending { color: var(--fg); opacity: .7; }
+.chat-mirror .w.sent { color: var(--fg); }
+.chat-mirror .w.ack { animation: ack .6s ease-out; }
+@keyframes ack { from { color: var(--accent); text-shadow: 0 0 6px #e8b44c99; } to { color: var(--fg); text-shadow: none; } }
+.chat-mirror .placeholder { color: #44444c; font-style: italic; }
 .chat-status { color: var(--dim); font-size: 13px; min-height: 1.4em; }
 .chat-hint { color: var(--accent); font-size: 13px; }
 

@@ -33,29 +33,83 @@ internal static class UnitTests
             f.Input(b, "hey ", InputKind.Word, 10);           // too late: james waits
             T.Eq(a, f.Owner);
             T.True(f.Wanting.Contains(b));
-            f.Input(a, "hello wrold", InputKind.Edit, 20);
-            f.Input(a, "hello world", InputKind.Edit, 30);
-            T.Eq("hello world", f.LiveText);
+            f.Input(a, "hello wrold ", InputKind.Word, 20);
+            f.Input(a, "hello world ", InputKind.Edit, 30);    // a correction to a word that's already out
+            T.Eq("hello world ", f.LiveText);
+            f.Input(a, "hello world ag", InputKind.Edit, 35);  // the word being typed stays private
+            T.Eq("hello world ", f.LiveText);
             f.Input(a, "hello world", InputKind.Send, 40);
             T.Eq(null, f.Owner);
             T.Eq("richard: hello world", s.Lines[^1]);
             T.Eq(("richard", "hello world"), s.Tooks[^1]);
         });
 
-        T.Add("floor: a refused Enter keeps the text; Enter works once quiet", () =>
+        T.Add("floor: an unfinished word can't take the floor or contend for it", () =>
+        {
+            var s = new Sink(); var f = new Floor(s);
+            var a = new ChatUser(1, "a"); var b = new ChatUser(2, "b");
+            f.Input(a, "partialwordwithnospace", InputKind.Word, 0);   // a client that cheats on "word"
+            T.Eq(null, f.Owner);
+            f.Input(b, "real ", InputKind.Word, 1);
+            T.Eq(b, f.Owner);
+            T.Eq("real ", f.LiveText);
+        });
+
+        T.Add("floor: a refused Enter keeps the text; Enter interrupts once the speaker is quiet", () =>
         {
             var s = new Sink(); var f = new Floor(s);
             var a = new ChatUser(1, "a"); var b = new ChatUser(2, "b");
             f.Input(a, "talking ", InputKind.Word, 0);
-            f.Input(b, "me too", InputKind.Send, 1);
+            f.Input(b, "me too", InputKind.Send, 1);           // a is still talking: refused, kept
             T.Eq(0, s.Lines.Count);
             T.Eq(0, s.Tooks.Count);
             T.True(f.Wanting.Contains(b));
-            f.Tick(1 + Floor.IdleMs);                         // a went quiet: committed
-            T.Eq("a: talking", s.Lines[^1]);
-            f.Input(b, "me too", InputKind.Send, 5000);
-            T.Eq("b: me too", s.Lines[^1]);
+            f.Input(b, "me too", InputKind.Send, 1 + Floor.IdleMs);
+            T.Eq("a: talking", s.Lines[^2]);                   // a's line is said as it stands...
+            T.Eq("b: me too", s.Lines[^1]);                    // ...then b's
             T.False(f.Wanting.Contains(b));
+        });
+
+        T.Add("floor: a quiet speaker keeps the line until someone interrupts", () =>
+        {
+            var s = new Sink(); var f = new Floor(s);
+            var a = new ChatUser(1, "a"); var b = new ChatUser(2, "b");
+            f.Input(a, "i think teh ", InputKind.Word, 0);
+            f.Tick(60_000);                                    // a minute of silence: still live, nothing said
+            T.Eq(a, f.Owner);
+            T.Eq(0, s.Lines.Count);
+            f.Input(b, "anyway ", InputKind.Word, 60_000);     // b interrupts: a lives with the typo
+            T.Eq("a: i think teh", s.Lines[^1]);
+            T.Eq(("a", "i think teh"), s.Tooks[^1]);           // a's client strips that; an unsent word would stay
+            T.Eq(b, f.Owner);
+            T.Eq("anyway ", f.LiveText);
+        });
+
+        T.Add("floor: typing heartbeats keep a speaker mid-word from being interrupted", () =>
+        {
+            var s = new Sink(); var f = new Floor(s);
+            var a = new ChatUser(1, "a"); var b = new ChatUser(2, "b");
+            f.Input(a, "the word ", InputKind.Word, 0);
+            f.SetTyping(a, true, 2000);                        // typing "antidisestablishmentarianism"
+            f.SetTyping(a, true, 4000);
+            f.Input(b, "hey ", InputKind.Word, 5000);          // only 1 s after a's last keystroke: no interruption
+            T.Eq(a, f.Owner);
+            T.True(f.Wanting.Contains(b));
+        });
+
+        T.Add("floor: words on air are corrected per character, and edits can't add words", () =>
+        {
+            var s = new Sink(); var f = new Floor(s);
+            var a = new ChatUser(1, "a");
+            f.Input(a, "hello wrold ", InputKind.Word, 0);
+            f.Input(a, "hello wrol", InputKind.Edit, 1);       // backspacing into a word that's out: still out
+            T.Eq("hello wrol", f.LiveText);
+            f.Input(a, "hello world", InputKind.Edit, 2);
+            T.Eq("hello world", f.LiveText);
+            f.Input(a, "hello world again", InputKind.Edit, 3); // a new word only goes out on space
+            T.Eq("hello world ", f.LiveText);
+            f.Input(a, "hello world again ", InputKind.Word, 4);
+            T.Eq("hello world again ", f.LiveText);
         });
 
         T.Add("floor: talking over someone for 8 words turns into a shouting match", () =>

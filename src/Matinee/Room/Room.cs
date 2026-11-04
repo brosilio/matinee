@@ -318,7 +318,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
                 return;
             }
             case "type":
-                lock (_lock) if (v.User is not null) _floor.SetTyping(v.User, m.On);
+                lock (_lock) if (v.User is not null) _floor.SetTyping(v.User, m.On, Clock.NowMs);
                 return;
             case "in":
             {

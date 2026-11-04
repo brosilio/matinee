@@ -29,15 +29,21 @@ public interface IFloorSink
 /// The movie-theater chat: one live line, contended for like a room full of people talking.
 ///
 /// <list type="bullet">
-/// <item>The live line is free until someone completes a word (space). That person takes the floor; their
-/// words and corrections stream to everyone as they type.</item>
-/// <item>Anyone else who types while the floor is taken keeps their text in their own box and is listed as
-/// wanting to speak. Enter sends it, but only when the floor is free.</item>
-/// <item>The owner's line is committed to history on Enter, or after <see cref="IdleMs"/> of silence.</item>
-/// <item>If someone keeps talking over the owner for <see cref="ClashWords"/> words, it turns into a shouting
+/// <item>The live line is free until someone completes a word (space). That person takes the floor. Their words
+/// go out as each one is completed (the word being typed is never shown); words already out can be corrected, and
+/// the corrections stream character by character. Corrections can't add words: only a space does.</item>
+/// <item>A line stays live until its speaker presses Enter, however long they pause. It's only taken away if
+/// someone <b>interrupts</b>: completes a word, or presses Enter, while the speaker has been quiet for
+/// <see cref="IdleMs"/>. The speaker's line is then committed exactly as it stands, typos and all, and the
+/// interrupter has the floor. Whatever the speaker hadn't sent yet stays in their box.</item>
+/// <item>Anyone who types while the speaker is still talking keeps their text and is listed as wanting to speak.</item>
+/// <item>If someone keeps talking over the speaker for <see cref="ClashWords"/> words, it turns into a shouting
 /// match: the line so far is committed, and from then on every word either of them completes becomes its own
-/// history line, interleaved. It lasts until the floor is released; someone has to shut up.</item>
+/// history line, interleaved. It lasts until they've all been quiet for <see cref="IdleMs"/>.</item>
 /// </list>
+///
+/// "Talking" includes typing a word that isn't finished yet: clients send typing heartbeats
+/// (<see cref="SetTyping"/>), so nobody gets interrupted halfway through a long word.
 ///
 /// Not thread-safe: the room serializes calls.
 /// </summary>
@@ -53,7 +59,7 @@ public sealed class Floor(IFloorSink sink)
     private readonly HashSet<ChatUser> _clashing = new();
     private readonly HashSet<ChatUser> _typing = new();
     private readonly List<ChatUser> _wanting = new();
-    private double _lastOwnerInput;
+    private double _lastOwnerInput, _lastClashInput;
 
     public ChatUser? Owner { get; private set; }
     public string LiveText { get; private set; } = "";
@@ -62,8 +68,11 @@ public sealed class Floor(IFloorSink sink)
     public IReadOnlyList<ChatUser> Wanting => _wanting;
     public bool IsClashing(ChatUser u) => _clashing.Contains(u);
 
-    public void SetTyping(ChatUser u, bool on)
+    /// <summary>Typing indicator, and heartbeat: a speaker who's typing (even mid-word) isn't quiet.</summary>
+    public void SetTyping(ChatUser u, bool on, double now)
     {
+        if (on && u == Owner) _lastOwnerInput = now;
+        if (on && IsClashing(u)) _lastClashInput = now;
         bool changed = on ? _typing.Add(u) : _typing.Remove(u);
         if (!on) changed |= _wanting.Remove(u);
         if (changed) sink.StateChanged();
@@ -73,24 +82,14 @@ public sealed class Floor(IFloorSink sink)
     {
         if (text.Length > MaxText) text = text[..MaxText];
         text = Normalize(u, text);
+        // New words exist once their space is typed: the unfinished last word stays in the sender's box (Enter
+        // sends everything). Contention is decided on word boundaries, never mid-word.
+        if (kind == InputKind.Word) text = CompletePart(text);
 
         if (Owner is null)
         {
-            if (kind == InputKind.Send)
-            {
-                SpeakAll(u, text);
-                return;
-            }
-            if (kind == InputKind.Word && CompleteWords(text) > 0)
-            {
-                Owner = u;
-                LiveText = text;
-                _lastOwnerInput = now;
-                _wanting.Remove(u);
-                _typing.Add(u);
-                _contenders.Clear();
-                sink.StateChanged();
-            }
+            if (kind == InputKind.Send) SpeakAll(u, text);
+            else if (kind == InputKind.Word && CompleteWords(text) > 0) Take(u, text, now);
             return;
         }
 
@@ -99,6 +98,7 @@ public sealed class Floor(IFloorSink sink)
             _lastOwnerInput = now;
             if (IsClashing(u))
             {
+                _lastClashInput = now;
                 if (kind == InputKind.Send) { SpeakWords(u, text, all: true); Release(); }
                 else if (kind == InputKind.Word) SpeakWords(u, text, all: false);
                 return;
@@ -110,6 +110,8 @@ public sealed class Floor(IFloorSink sink)
                 Release();
                 return;
             }
+            // A correction may change words already out, character by character, but never add one.
+            if (kind == InputKind.Edit) text = FirstWords(text, CountWords(LiveText));
             if (LiveText != text)
             {
                 LiveText = text;
@@ -122,8 +124,18 @@ public sealed class Floor(IFloorSink sink)
         if (kind == InputKind.Edit) return;
         if (IsClashing(u))
         {
-            if (kind == InputKind.Word) SpeakWords(u, text, all: false);
-            else SpeakWords(u, text, all: true);
+            _lastClashInput = now;
+            SpeakWords(u, text, all: kind == InputKind.Send);
+            return;
+        }
+        bool speaking = kind == InputKind.Send ? text.Trim().Length > 0 : CompleteWords(text) > 0;
+        if (speaking && !Clash && now - _lastOwnerInput >= IdleMs)
+        {
+            // Interrupting a speaker who went quiet: their line is said as it stands, and the floor changes hands.
+            CommitLive();
+            Release();
+            if (kind == InputKind.Send) SpeakAll(u, text);
+            else Take(u, text, now);
             return;
         }
         bool changed = false;
@@ -146,6 +158,7 @@ public sealed class Floor(IFloorSink sink)
 
             if (c.Overlap >= ClashWords)
             {
+                _lastClashInput = now;
                 StartClash(u, text);
                 return;
             }
@@ -153,12 +166,21 @@ public sealed class Floor(IFloorSink sink)
         if (changed) sink.StateChanged();
     }
 
-    /// <summary>Release the floor if its owner went quiet.</summary>
+    private void Take(ChatUser u, string text, double now)
+    {
+        Owner = u;
+        LiveText = text;
+        _lastOwnerInput = now;
+        _wanting.Remove(u);
+        _typing.Add(u);
+        _contenders.Clear();
+        sink.StateChanged();
+    }
+
+    /// <summary>A shouting match ends once everyone in it has been quiet for a while. (A live line never times out.)</summary>
     public void Tick(double now)
     {
-        if (Owner is null || now - _lastOwnerInput < IdleMs) return;
-        if (!IsClashing(Owner)) CommitLive();
-        Release();
+        if (Clash && now - _lastClashInput >= IdleMs) Release();
     }
 
     public void Leave(ChatUser u)
@@ -279,6 +301,33 @@ public sealed class Floor(IFloorSink sink)
             else inWord = true;
         }
         return n;
+    }
+
+    internal static int CountWords(string text)
+    {
+        int n = 0;
+        bool inWord = false;
+        foreach (char c in text)
+        {
+            bool w = !char.IsWhiteSpace(c);
+            if (w && !inWord) n++;
+            inWord = w;
+        }
+        return n;
+    }
+
+    /// <summary>The prefix of <paramref name="text"/> holding at most <paramref name="n"/> words (and nothing after).</summary>
+    internal static string FirstWords(string text, int n)
+    {
+        int seen = 0;
+        bool inWord = false;
+        for (int i = 0; i < text.Length; i++)
+        {
+            bool w = !char.IsWhiteSpace(text[i]);
+            if (w && !inWord && ++seen > n) return text[..i];
+            inWord = w;
+        }
+        return text;
     }
 
     /// <summary>The prefix of <paramref name="text"/> made of complete words.</summary>
