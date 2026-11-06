@@ -12,9 +12,9 @@ Per window it reports:
   freeze    time the picture would be frozen (no new frame for >2 frame intervals)
   lag       how far behind live the viewer plays (room delay + its own extra delay)
 
-stdlib only. Usage: probe.py [--url ws://127.0.0.1:8080/ws] [--seconds 30] [--window 5] [--pass popcorn]
+stdlib only. Usage: probe.py [--url ws://127.0.0.1:8080/ws | wss://host/path/ws] [--seconds 30] [--window 5] [--pass popcorn]
 """
-import argparse, asyncio, base64, json, os, statistics, struct, time
+import argparse, asyncio, base64, json, os, ssl, statistics, struct, time
 
 def now_ms():
     return time.monotonic() * 1000.0
@@ -123,8 +123,9 @@ class Probe:
         self.summary()
 
     async def session(self, end):
-        host, port, path = parse(self.a.url)
-        r, w = await asyncio.open_connection(host, port)
+        host, port, path, tls = parse(self.a.url)
+        r, w = await asyncio.open_connection(host, port, ssl=ssl.create_default_context() if tls else None,
+                                             server_hostname=host if tls else None)
         key = base64.b64encode(os.urandom(16)).decode()
         w.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
@@ -211,11 +212,12 @@ class Probe:
         print("SUMMARY " + json.dumps(res), flush=True)
 
 def parse(url):
-    assert url.startswith("ws://"), "only ws:// (run behind badnet's plaintext relay)"
-    rest = url[5:]
+    tls = url.startswith("wss://")
+    assert tls or url.startswith("ws://"), "ws:// or wss:// URL"
+    rest = url[6:] if tls else url[5:]
     hostport, _, path = rest.partition("/")
     host, _, port = hostport.partition(":")
-    return host, int(port or 80), "/" + path
+    return host, int(port or (443 if tls else 80)), "/" + path, tls
 
 def frame_text(s):
     p = s.encode(); m = os.urandom(4); n = len(p)

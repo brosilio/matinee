@@ -195,7 +195,7 @@ public sealed class Viewer : IAdaptViewer
             }
         }
         catch (OperationCanceledException) { }
-        catch (IOException) { Kick("connection lost"); }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException) { Kick("connection lost"); }
         catch (ObjectDisposedException) { Kick("connection lost"); }
         finally
         {
@@ -207,7 +207,7 @@ public sealed class Viewer : IAdaptViewer
                     using var t = new CancellationTokenSource(1000);
                     await _stream.WriteAsync(WsFrame.Close(1000, KickReason), t.Token).ConfigureAwait(false);
                 }
-                catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException or NotSupportedException) { }
+                catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or OperationCanceledException or ObjectDisposedException or NotSupportedException) { }
             }
         }
     }

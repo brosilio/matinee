@@ -1,0 +1,37 @@
+# matinee as a system service. Install: binary in /opt/matinee/bin, web client in /opt/matinee/web, config in
+# /etc/matinee/matinee.conf (root:matinee 0640: it holds secrets); useradd --system matinee; systemctl enable --now matinee.
+[Unit]
+Description=matinee streaming room
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=matinee
+Group=matinee
+ExecStartPre=/opt/matinee/bin/matinee -t -c /etc/matinee/matinee.conf
+ExecStart=/opt/matinee/bin/matinee -c /etc/matinee/matinee.conf
+ExecReload=/opt/matinee/bin/matinee -t -c /etc/matinee/matinee.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=2
+# A small box shared with other services: cap it.
+MemoryMax=300M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

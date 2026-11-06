@@ -98,7 +98,7 @@ internal sealed class UplinkServer
                 if (m.Value.IsText && ClientMessage.TryParse(m.Value.Payload, out var c)) OnControl(c);
             }
         }
-        catch (Exception e) when (e is OperationCanceledException or IOException or EndOfStreamException or ObjectDisposedException or WsProtocolException) { }
+        catch (Exception e) when (e is OperationCanceledException or IOException or System.Net.Sockets.SocketException or EndOfStreamException or ObjectDisposedException or WsProtocolException) { }
         finally
         {
             try { _cts.Cancel(); } catch (ObjectDisposedException) { }
@@ -216,7 +216,7 @@ internal sealed class UplinkServer
                     await Task.WhenAny(appended, _signal.WaitAsync(1000, ct)).ConfigureAwait(false);
             }
         }
-        catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException) { }
+        catch (Exception e) when (e is OperationCanceledException or IOException or System.Net.Sockets.SocketException or ObjectDisposedException) { }
         finally
         {
             try { _cts.Cancel(); } catch (ObjectDisposedException) { }

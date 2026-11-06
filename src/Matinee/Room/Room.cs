@@ -225,7 +225,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
         }
         catch (OperationCanceledException) { }
         catch (WsProtocolException e) { _log.Debug("viewer: protocol error", new("remote", remote), new("error", e.Message)); }
-        catch (Exception e) when (e is IOException or EndOfStreamException or ObjectDisposedException) { }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or EndOfStreamException or ObjectDisposedException) { }
         finally
         {
             if (joined) Leave(v);
@@ -252,7 +252,7 @@ public sealed class Room : IFloorSink, IAsyncDisposable
             await stream.WriteAsync(f, ct).ConfigureAwait(false);
             await stream.WriteAsync(WsFrame.Close(4000, code), ct).ConfigureAwait(false);
         }
-        catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException) { }
+        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or ObjectDisposedException or OperationCanceledException) { }
     }
 
     private bool CheckPassword(string? given)
