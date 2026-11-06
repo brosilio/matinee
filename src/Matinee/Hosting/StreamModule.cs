@@ -45,7 +45,7 @@ public sealed class StreamModule(Engine engine) : IModule
 
     private StreamSettings _s = new();
     private bool _seenBlock;
-    private bool _uplinkEndpoint;
+    private bool _uplinkEndpoint, _hlsEndpoint;
 
     public string Name => "matinee";
 
@@ -135,6 +135,23 @@ public sealed class StreamModule(Engine engine) : IModule
                 _uplinkEndpoint = true;
             },
         });
+        r.AddDirective(new() { Name = "hls", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Hls(h => h with { Enabled = i.Flag(0) }) });
+        r.AddDirective(new() { Name = "hls_token", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Hls(h => h with { Token = Token(i) }) });
+        r.AddDirective(new() { Name = "hls_window", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Hls(h => h with { Window = Range(i, i.Int(0), 3, 30) }) });
+        r.AddDirective(new() { Name = "hls_start", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Hls(h => h with { StartOffsetMs = Range(i, i.Millis(0), 1000, 30_000) }) });
+        r.AddDirective(new() { Name = "hls_low", Contexts = b, MinArgs = 1, MaxArgs = 1, Handler = i => Hls(h => h with { LowKbps = i.Args[0] == "off" ? 0 : Kbps(i, 100, 20_000) }) });
+        r.AddDirective(new()
+        {
+            Name = "matinee_hls", Contexts = [ContextKind.Location],
+            Handler = i =>
+            {
+                var c = i.Conf<LocationHandlerConf>();
+                if (c.Handler is not null) throw i.Error($"location already handled by {c.Owner}");
+                c.Handler = HandleHls;
+                c.Owner = Name;
+                _hlsEndpoint = true;
+            },
+        });
         r.AddDirective(new() { Name = "adapt_args", Contexts = b, MinArgs = 1, MaxArgs = 128, Handler = i => Adapt(a => a with { ExtraArgs = [.. i.Args] }) });
         r.AddDirective(new() { Name = "proxy_args", Contexts = b, MinArgs = 1, MaxArgs = 128, Handler = i => _s = _s with { ProxyArgs = [.. i.Args] } });
 
@@ -160,6 +177,11 @@ public sealed class StreamModule(Engine engine) : IModule
         if (_s.UplinkPull is not null && _s.IngestListen is not null)
             throw new ConfigException("matinee: uplink_pull and ingest_listen are two different sources; use one");
         if (_uplinkEndpoint && _s.UplinkKey is null) throw new ConfigException("matinee: matinee_uplink needs an uplink_key");
+        if (_hlsEndpoint && !_s.Hls.Enabled) throw new ConfigException("matinee: matinee_hls needs \"hls on\"");
+        if (_s.Hls.Enabled && _s.Hls.Token is null && _s.Password is not null)
+            setup.Log.Warn("matinee: hls has no hls_token, so anyone with the URL can watch (the password only guards the web player)");
+        if (_s.Hls.Enabled && _s.Hls.StartOffsetMs + 1500 > _s.Hls.Window * 1000)
+            throw new ConfigException("matinee: hls_start must leave room in hls_window (a segment is about 1 s)");
         if (_s.Adapt.Enabled && _s.UplinkPull is null && _s.Adapt.BudgetKbps > 0)
             setup.Log.Warn("matinee: adapt_budget only applies to re-encodes made by an uplinked home instance");
     }
@@ -213,6 +235,76 @@ public sealed class StreamModule(Engine engine) : IModule
 
     private static int Range(DirectiveInvocation i, int v, int min, int max) =>
         v >= min && v <= max ? v : throw i.Error($"must be between {min} and {max}");
+
+    private void Hls(Func<Room.HlsSettings, Room.HlsSettings> change) => _s = _s with { Hls = change(_s.Hls) };
+
+    private static string Token(DirectiveInvocation i)
+    {
+        var t = NonEmpty(i, 0);
+        foreach (char ch in t)
+            if (!(char.IsAsciiLetterOrDigit(ch) || ch is '-' or '_')) throw i.Error("letters, digits, - and _ only (it goes in a URL)");
+        if (t.Length < 16) throw i.Error("at least 16 characters (it's the only thing guarding the stream)");
+        return t;
+    }
+
+    /// <summary>
+    /// HLS: <c>…/[token/]index.m3u8</c> (master), <c>…/[token/]src.m3u8</c> or <c>low.m3u8</c> (variants),
+    /// <c>…/[token/]src/123.ts</c> (segments).
+    /// </summary>
+    private async ValueTask<HandlerResult> HandleHls(HttpContext ctx)
+    {
+        var hls = engine.Hls;
+        if (hls is null) return HandlerResult.WithStatus(404);
+        if (!ctx.Request.IsGetOrHead) return HandlerResult.WithStatus(405);
+        var parts = ctx.Request.Path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return HandlerResult.WithStatus(404);
+        string file = parts[^1];
+        bool segment = file.EndsWith(".ts", StringComparison.Ordinal);
+        int tokenAt = parts.Length - (segment ? 3 : 2);
+        var token = hls.Settings.Token;
+        if (token is not null && (tokenAt < 0 || !SameSecret(parts[tokenAt], token))) return HandlerResult.WithStatus(404);
+        hls.Touch();
+
+        byte[] body;
+        string type;
+        if (segment)
+        {
+            if (parts.Length < 2 || hls.Find(parts[^2]) is not { } v
+                || !long.TryParse(file.AsSpan(0, file.Length - 3), System.Globalization.NumberStyles.None, null, out long seq)
+                || v.Get(seq) is not { } seg)
+                return HandlerResult.WithStatus(404);
+            body = seg.Data;
+            type = "video/mp2t";
+            ctx.Response.Headers.Set("Cache-Control", "max-age=60");
+        }
+        else if (file == "index.m3u8")
+        {
+            body = System.Text.Encoding.UTF8.GetBytes(hls.Master());
+            type = "application/vnd.apple.mpegurl";
+            ctx.Response.Headers.Set("Cache-Control", "no-cache");
+        }
+        else if (file.EndsWith(".m3u8", StringComparison.Ordinal) && hls.VariantPlaylist(file[..^5]) is { } pl)
+        {
+            body = System.Text.Encoding.UTF8.GetBytes(pl);
+            type = "application/vnd.apple.mpegurl";
+            ctx.Response.Headers.Set("Cache-Control", "no-cache");
+        }
+        else return HandlerResult.WithStatus(404);
+
+        ctx.Response.Headers.Set("Content-Type", type);
+        ctx.Response.Headers.Set("Access-Control-Allow-Origin", "*");
+        ctx.Response.ContentLength = body.Length;
+        if (!ctx.Request.IsHead) await ctx.Response.WriteAsync(body).ConfigureAwait(false);
+        return HandlerResult.Done;
+    }
+
+    private static bool SameSecret(string a, string b)
+    {
+        Span<byte> x = stackalloc byte[32], y = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(a), x);
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(b), y);
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(x, y);
+    }
 
     private void Adapt(Func<Media.AdaptSettings, Media.AdaptSettings> change) => _s = _s with { Adapt = change(_s.Adapt) };
 

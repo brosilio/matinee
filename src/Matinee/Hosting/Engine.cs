@@ -21,6 +21,10 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
     private IngestSession? _ingest;
     private FfmpegRelay? _relay;
     private UplinkClient? _uplink;
+    private Hls? _hls;
+
+    /// <summary>HLS output, when enabled.</summary>
+    internal Hls? Hls => _hls;
     private readonly HashSet<Task> _relayCleanups = [];
     private bool _disposed;
 
@@ -48,6 +52,9 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
                 !old.ProxyArgs.AsSpan().SequenceEqual(s.ProxyArgs);
             Settings = s;
             Room.Apply(s);
+            if (s.Hls.Enabled && _hls is null) _hls = new Hls(Room, s.Hls, _log);
+            else if (!s.Hls.Enabled && _hls is not null) { await _hls.DisposeAsync().ConfigureAwait(false); _hls = null; }
+            if (_hls is not null) _hls.Settings = s.Hls;
             if (old.UplinkPull != s.UplinkPull || old.UplinkPullKey != s.UplinkPullKey || (_uplink is null && s.UplinkPull is not null))
             {
                 if (_uplink is not null) await _uplink.DisposeAsync().ConfigureAwait(false);
@@ -191,6 +198,8 @@ public sealed class Engine : IRtmpHandler, IAsyncDisposable
             if (rtmp is not null) await rtmp.DisposeAsync().ConfigureAwait(false);
             if (_uplink is not null) await _uplink.DisposeAsync().ConfigureAwait(false);
             _uplink = null;
+            if (_hls is not null) await _hls.DisposeAsync().ConfigureAwait(false);
+            _hls = null;
             Task[] relayCleanups;
             lock (_lock) relayCleanups = [.. _relayCleanups];
             if (relayCleanups.Length > 0) await Task.WhenAll(relayCleanups).ConfigureAwait(false);

@@ -184,11 +184,11 @@ internal static class AdaptiveTests
             T.True(Array.IndexOf(args, "-vaapi_device") < Array.IndexOf(args, "-i"));   // a global option: before the input
         });
 
-        T.Add("adapt: transcoder arguments keep timestamps and key on every second", () =>
+        T.Add("adapt: transcoder arguments keep timestamps and copy the source's keyframes", () =>
         {
             var args = Transcoder.Args(450, 360, new AdaptSettings()).ToArray();
             T.True(args.Contains("-copyts"));
-            T.True(args.Contains("expr:gte(t,n_forced*1)"));
+            T.Eq("source", args[Array.IndexOf(args, "-force_key_frames") + 1]);   // keyframes aligned with the source
             T.True(args.Contains("450k"));
             T.Eq("pipe:1", args[^1]);
             T.Eq(240, Transcoder.HeightFor(300));

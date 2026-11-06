@@ -82,6 +82,10 @@ internal sealed class Adaptive(Rendition source, Func<int, Rendition> start, Act
     private double _lastTick = double.NaN;
     private double _noStartUntil = double.NegativeInfinity;
     private double _budgetLoggedAt = double.NegativeInfinity;
+    private int _externalKbps;
+
+    /// <summary>Upload used outside the policy (HLS's low variant), counted against the budget.</summary>
+    public int ExternalKbps { get => Volatile.Read(ref _externalKbps); set => Volatile.Write(ref _externalKbps, value); }
 
     public IEnumerable<Rendition> Renditions { get { foreach (var t in _tiers) yield return t.R; } }
     public double SourceKbps => _sourceKbps;
@@ -278,7 +282,7 @@ internal sealed class Adaptive(Rendition source, Func<int, Rendition> start, Act
     private Tier? TryStart(double now, int kbps, AdaptSettings s, Tier? replacing = null)
     {
         int live = 0;
-        double upload = double.IsNaN(_sourceKbps) ? 0 : _sourceKbps;
+        double upload = (double.IsNaN(_sourceKbps) ? 0 : _sourceKbps) + ExternalKbps;
         foreach (var t in _tiers)
         {
             if (t.Dead) continue;

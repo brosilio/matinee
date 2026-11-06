@@ -105,7 +105,8 @@ internal sealed class Transcoder : IEncoder
         }
         a.AddRange([
             "-b:v", $"{kbps}k", "-maxrate", $"{kbps}k", "-bufsize", bufsize,
-            "-force_key_frames", "expr:gte(t,n_forced*1)",
+            // Keyframes exactly where the source has them: switching between renditions, and HLS variants, line up.
+            "-force_key_frames", "source",
             "-c:a", "aac", "-b:a", $"{s.AudioKbps}k", "-ar", "48000", "-ac", "2",
             "-copyts", "-fps_mode", "passthrough", "-muxdelay", "0", "-muxpreload", "0",
             "-flvflags", "no_duration_filesize",

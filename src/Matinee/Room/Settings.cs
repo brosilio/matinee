@@ -46,6 +46,9 @@ public sealed record StreamSettings
     public Uri? UplinkPull { get; init; }
     public string? UplinkPullKey { get; init; }
 
+    /// <summary>HLS output, for players we don't control (VRChat).</summary>
+    public HlsSettings Hls { get; init; } = new();
+
     /// <summary>Automatic low-bitrate re-encodes for viewers on slow links (see <see cref="Adaptive"/>).</summary>
     public Media.AdaptSettings Adapt { get; init; } = new();
 

@@ -110,6 +110,8 @@ internal static class UplinkTests
                 double sourceHead = room.Ring.HeadTs;
                 T.True(Math.Abs(sourceHead - rk.Ts) < 3000);
                 T.True(rk.Config!.Codec!.StartsWith("avc1", StringComparison.Ordinal));
+                // ...with its audio too.
+                await Until(() => HasAudio(r.Ring), 5000, "audio in the re-encode");
                 await r.Encoder!.StopAsync();
             }
             finally
@@ -117,6 +119,12 @@ internal static class UplinkTests
                 try { ffmpeg.Kill(); } catch (InvalidOperationException) { }
             }
         }
+    }
+
+    private static bool HasAudio(MediaRing ring)
+    {
+        for (long i = ring.Tail; i < ring.Head; i++) if (ring.Get(i) is { IsAudio: true }) return true;
+        return false;
     }
 
     private static bool HaveFfmpeg()

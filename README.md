@@ -103,6 +103,12 @@ All stream settings live in one top-level `matinee` block:
 | `adapt_encoder x264\|vaapi` | `x264` | Re-encode on the CPU, or on an AMD/Intel GPU through VAAPI. |
 | `adapt_vaapi_device path` | `/dev/dri/renderD128` | Which GPU (render node) VAAPI uses. |
 | `adapt_budget kbps` | none | Cloud side of an uplink: home's upload. No re-encode starts that would push the source plus re-encodes past it. |
+| `hls on\|off` | `off` | HLS output (MPEG-TS segments, no re-encoding) for players we don't control, such as VRChat's. |
+| `hls_token value` | none | Secret URL segment (16+ characters). VRChat's players can't send a password, so the URL is the key. |
+| `hls_start time` | `3s` | Where players start: this far behind the source, the same for everyone. |
+| `hls_window n` | `6` | Segments per playlist. Short, so a player that stalls rejoins near live instead of drifting. |
+| `hls_low kbps\|off` | `off` | A fixed low-bitrate variant, made (at home, on the GPU, when uplinked) while HLS viewers are around. |
+| `matinee_hls;` (location) | | Serves `…/<token>/index.m3u8` (master), the variant playlists and segments. |
 | `uplink_key value` | none | Home side: the key a cloud instance must present to `matinee_uplink`. |
 | `uplink_pull ws[s]://… key` | disabled | Cloud side: take the stream (and re-encodes) from a home instance instead of RTMP ingest. |
 | `matinee_uplink;` (location) | | Home side: the endpoint a cloud instance pulls from (usually behind `listen tunnel:…`). |
@@ -164,6 +170,44 @@ openssl x509 -req -in home.csr -CA tunnel-ca.pem -CAkey tunnel-ca.key -CAcreates
 ```
 
 `home.crt`/`home.key` go on the home box; `tunnel-ca.pem` goes on the cloud box (`ssl_client_certificate`).
+
+## VRChat (HLS)
+
+VRChat's video players (and any other player we don't control) can't run the web client, so matinee also serves the
+stream as HLS: `hls on` plus a `matinee_hls` location. Segments are cut from the media already in memory (no
+re-encoding, so the 1-CPU box doesn't notice) as MPEG-TS with H.264 and AAC, which plays on PC and Quest.
+
+```nginx
+matinee {
+    hls on;
+    hls_token vrc-movie-night-change-me;   # the URL is the key
+    hls_start 3s;
+    hls_low   600k;                        # optional low variant for viewers on bad links
+}
+# in the server block:
+location /hls/ { matinee_hls; }
+```
+
+The URL to paste into the world's video player: `https://stream.example.com/hls/vrc-movie-night-change-me/index.m3u8`.
+VRChat only plays allowlisted hosts by default, so each viewer needs "Allow Untrusted URLs" turned on for a
+self-hosted domain.
+
+Keeping everyone together, when the server can't control the players:
+
+- Segments are cut at the source's keyframes, and the low variant at exactly the same timestamps under the same
+  numbers (re-encodes copy the source's keyframe positions), so variants line up and switching between them is
+  seamless.
+- Each playlist tells players to start at the same moment, `hls_start` behind *now* (`EXT-X-START`, computed per
+  request), wherever in a segment they happen to join.
+- The playlist window is short, so a player that stalls falls off its end and rejoins near live.
+
+Measured with real-time players joining up to 4.4 s apart: 3.1-4.0 s behind the source, and 0.3-0.9 s apart from
+each other. Players that start exactly where asked (`PRECISE=YES`) do better; players that start at the beginning of
+a segment can be up to one segment apart, and a segment is one keyframe interval. For tighter sync, shorten OBS's
+keyframe interval (0.5 s halves the spread, for a few percent more bitrate).
+
+Web and HLS viewers see the same moment when the room's `delay` matches: about `hls_start` plus half a segment
+(`delay 3500ms` with the defaults).
 
 ## Proxy mode
 

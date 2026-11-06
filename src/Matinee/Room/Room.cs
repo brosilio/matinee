@@ -83,6 +83,19 @@ public sealed class Room : IFloorSink, IAsyncDisposable
         WakeAll();
     }
 
+    /// <summary>A rendition outside the adaptation policy (HLS's low variant), on whichever encoder is configured.</summary>
+    internal Rendition StartRendition(int kbps) =>
+        RemoteEncoders?.Invoke(kbps) ?? Transcoder.Start(Ring, kbps, Settings.Adapt, WakeAll, _log);
+
+    internal void StopRendition(Rendition r)
+    {
+        if (r.Encoder is null) return;
+        lock (_stopping) { _stopping.RemoveAll(t => t.IsCompleted); _stopping.Add(r.Encoder.StopAsync()); }
+    }
+
+    /// <summary>Upload used by renditions outside the policy (kbit/s), so the budget accounts for them.</summary>
+    internal int ExternalKbps { get => _adapt.ExternalKbps; set => _adapt.ExternalKbps = value; }
+
     internal void WakeAll()
     {
         lock (_lock)
