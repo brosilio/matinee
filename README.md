@@ -209,6 +209,33 @@ keyframe interval (0.5 s halves the spread, for a few percent more bitrate).
 Web and HLS viewers see the same moment when the room's `delay` matches: about `hls_start` plus half a segment
 (`delay 3500ms` with the defaults).
 
+## Local test stack
+
+`scripts/devstack.sh up` runs the whole two-box topology on one machine: a home and a cloud instance from the example
+configs, joined by a real httpgrl tunnel (throwaway certificates), with HLS on. `--publisher` adds an ffmpeg test
+pattern; otherwise point OBS at it. It prints the URLs (including the LAN address) and `down` stops it all.
+
+```sh
+scripts/devstack.sh up --publisher            # x264 re-encodes; --encoder vaapi for an AMD/Intel GPU
+scripts/devstack.sh status
+scripts/devstack.sh down
+```
+
+Needs the .NET 10 SDK, ffmpeg and openssl, with httpgrl checked out next to this repo.
+
+**Testing with VRChat on Windows:**
+
+- *VRChat on another PC on the LAN* (simplest): run the stack on the Linux box and paste the printed LAN HLS URL into
+  the world's video player. Open ports 18080 (and 1935 if OBS runs on the Windows PC) in the Linux box's firewall.
+- *VRChat on the same machine, under Windows:* run the stack in WSL2 (Ubuntu with the .NET 10 SDK, ffmpeg and
+  openssl; both repos cloned side by side inside WSL). WSL2 forwards localhost to Windows, so VRChat and OBS use
+  the `localhost` URLs. Use x264 re-encodes there (VAAPI isn't dependable under WSL). For a Quest on the LAN to reach
+  it, enable WSL's mirrored networking (`networkingMode=mirrored` in `.wslconfig`, Windows 11).
+- Native Windows isn't supported yet: httpgrl is only exercised on Linux, and the GPU encoder path is VAAPI.
+
+Either way, VRChat needs "Allow Untrusted URLs" for a self-hosted address. Quest may refuse plain `http://`; test on
+PC first, and give the real deployment an HTTPS certificate.
+
 ## Proxy mode
 
 To republish to a third party (a restream service, say). For home → cloud, use the uplink above instead: it carries
