@@ -8,7 +8,10 @@ function serverUrl() {
   const q = new URLSearchParams(location.search).get('server');
   if (q) return q;
   if (window.MATINEE_SERVER) return window.MATINEE_SERVER;
-  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  // Relative to the page, so the client works under a path too (https://example.com/matinee/ -> /matinee/ws).
+  const u = new URL('ws', location.href);
+  u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return u.href;
 }
 
 const store = {
