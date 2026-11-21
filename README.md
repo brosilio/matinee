@@ -269,3 +269,7 @@ page uses HTTPS.
 The client needs WebCodecs and WebAudio (a current Firefox or Chromium-family browser). It continuously measures
 server clock offset, reconnects forever with bounded backoff, and treats four seconds without any server traffic as
 a dead connection.
+
+## License
+
+BSD Zero Clause (see [LICENSE](LICENSE)).
